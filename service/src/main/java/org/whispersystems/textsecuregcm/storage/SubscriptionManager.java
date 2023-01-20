@@ -6,7 +6,6 @@
 package org.whispersystems.textsecuregcm.storage;
 
 import static org.whispersystems.textsecuregcm.util.AttributeValues.b;
-import static org.whispersystems.textsecuregcm.util.AttributeValues.m;
 import static org.whispersystems.textsecuregcm.util.AttributeValues.n;
 import static org.whispersystems.textsecuregcm.util.AttributeValues.s;
 
@@ -15,8 +14,6 @@ import com.google.common.base.Throwables;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -24,6 +21,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import javax.ws.rs.ClientErrorException;
+import javax.ws.rs.core.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.subscriptions.ProcessorCustomer;
@@ -46,11 +45,8 @@ public class SubscriptionManager {
 
   public static final String KEY_USER = "U";  // B  (Hash Key)
   public static final String KEY_PASSWORD = "P";  // B
-  @Deprecated
-  public static final String KEY_CUSTOMER_ID = "C";  // S  (GSI Hash Key of `c_to_u` index)
   public static final String KEY_PROCESSOR_ID_CUSTOMER_ID = "PC"; // B (GSI Hash Key of `pc_to_u` index)
   public static final String KEY_CREATED_AT = "R";  // N
-  public static final String KEY_PROCESSOR_CUSTOMER_IDS_MAP = "PCI"; // M
   public static final String KEY_SUBSCRIPTION_ID = "S";  // S
   public static final String KEY_SUBSCRIPTION_CREATED_AT = "T";  // N
   public static final String KEY_SUBSCRIPTION_LEVEL = "L";
@@ -59,7 +55,7 @@ public class SubscriptionManager {
   public static final String KEY_CANCELED_AT = "B";  // N
   public static final String KEY_CURRENT_PERIOD_ENDS_AT = "D";  // N
 
-  public static final String INDEX_NAME = "c_to_u";  // Hash Key "C"
+  public static final String INDEX_NAME = "pc_to_u";  // Hash Key "PC"
 
   public static class Record {
 
@@ -69,7 +65,7 @@ public class SubscriptionManager {
     @VisibleForTesting
     @Nullable
     ProcessorCustomer processorCustomer;
-    public Map<SubscriptionProcessor, String> processorsToCustomerIds;
+    @Nullable
     public String subscriptionId;
     public Instant subscriptionCreatedAt;
     public Long subscriptionLevel;
@@ -94,7 +90,6 @@ public class SubscriptionManager {
       if (processorCustomerId != null) {
         record.processorCustomer = new ProcessorCustomer(processorCustomerId.second(), processorCustomerId.first());
       }
-      record.processorsToCustomerIds = getProcessorsToCustomerIds(item);
       record.subscriptionId = getString(item, KEY_SUBSCRIPTION_ID);
       record.subscriptionCreatedAt = getInstant(item, KEY_SUBSCRIPTION_CREATED_AT);
       record.subscriptionLevel = getLong(item, KEY_SUBSCRIPTION_LEVEL);
@@ -107,18 +102,6 @@ public class SubscriptionManager {
 
     public Optional<ProcessorCustomer> getProcessorCustomer() {
       return Optional.ofNullable(processorCustomer);
-    }
-
-    private static Map<SubscriptionProcessor, String> getProcessorsToCustomerIds(Map<String, AttributeValue> item) {
-      final AttributeValue attributeValue = item.get(KEY_PROCESSOR_CUSTOMER_IDS_MAP);
-      final Map<String, AttributeValue> attribute =
-          attributeValue == null ? Collections.emptyMap() : attributeValue.m();
-
-      final Map<SubscriptionProcessor, String> processorsToCustomerIds = new HashMap<>();
-      attribute.forEach((processorName, customerId) ->
-          processorsToCustomerIds.put(SubscriptionProcessor.valueOf(processorName), customerId.s()));
-
-      return processorsToCustomerIds;
     }
 
     /**
@@ -188,26 +171,27 @@ public class SubscriptionManager {
   /**
    * Looks in the GSI for a record with the given customer id and returns the user id.
    */
-  public CompletableFuture<byte[]> getSubscriberUserByStripeCustomerId(@Nonnull String customerId) {
+  public CompletableFuture<byte[]> getSubscriberUserByProcessorCustomer(ProcessorCustomer processorCustomer) {
     QueryRequest query = QueryRequest.builder()
         .tableName(table)
         .indexName(INDEX_NAME)
-        .keyConditionExpression("#customer_id = :customer_id")
+        .keyConditionExpression("#processor_customer_id = :processor_customer_id")
         .projectionExpression("#user")
         .expressionAttributeNames(Map.of(
-            "#customer_id", KEY_CUSTOMER_ID,
+            "#processor_customer_id", KEY_PROCESSOR_ID_CUSTOMER_ID,
             "#user", KEY_USER))
         .expressionAttributeValues(Map.of(
-            ":customer_id", s(Objects.requireNonNull(customerId))))
+            ":processor_customer_id", b(processorCustomer.toDynamoBytes())))
         .build();
     return client.query(query).thenApply(queryResponse -> {
       int count = queryResponse.count();
       if (count == 0) {
         return null;
       } else if (count > 1) {
-        logger.error("expected invariant of 1-1 subscriber-customer violated for customer {}", customerId);
+        logger.error("expected invariant of 1-1 subscriber-customer violated for customer {} ({})",
+            processorCustomer.customerId(), processorCustomer.processor());
         throw new IllegalStateException(
-            "expected invariant of 1-1 subscriber-customer violated for customer " + customerId);
+            "expected invariant of 1-1 subscriber-customer violated for customer " + processorCustomer);
       } else {
         Map<String, AttributeValue> result = queryResponse.items().get(0);
         return result.get(KEY_USER).b().asByteArray();
@@ -279,21 +263,18 @@ public class SubscriptionManager {
         .updateExpression("SET "
             + "#password = if_not_exists(#password, :password), "
             + "#created_at = if_not_exists(#created_at, :created_at), "
-            + "#accessed_at = if_not_exists(#accessed_at, :accessed_at), "
-            + "#processors_to_customer_ids = if_not_exists(#processors_to_customer_ids, :initial_empty_map)"
+            + "#accessed_at = if_not_exists(#accessed_at, :accessed_at)"
         )
         .expressionAttributeNames(Map.of(
             "#user", KEY_USER,
             "#password", KEY_PASSWORD,
             "#created_at", KEY_CREATED_AT,
-            "#accessed_at", KEY_ACCESSED_AT,
-            "#processors_to_customer_ids", KEY_PROCESSOR_CUSTOMER_IDS_MAP)
+            "#accessed_at", KEY_ACCESSED_AT)
         )
         .expressionAttributeValues(Map.of(
             ":password", b(password),
             ":created_at", n(createdAt.getEpochSecond()),
-            ":accessed_at", n(createdAt.getEpochSecond()),
-            ":initial_empty_map", m(Map.of()))
+            ":accessed_at", n(createdAt.getEpochSecond()))
         )
         .build();
     return client.updateItem(request).handle((updateItemResponse, throwable) -> {
@@ -310,39 +291,28 @@ public class SubscriptionManager {
   }
 
   /**
-   * Updates the active processor and customer ID for the given user record.
+   * Sets the processor and customer ID for the given user record.
    *
-   * @return the updated user record.
+   * @return the user record.
    */
-  public CompletableFuture<Record> updateProcessorAndCustomerId(Record userRecord,
+  public CompletableFuture<Record> setProcessorAndCustomerId(Record userRecord,
       ProcessorCustomer activeProcessorCustomer, Instant updatedAt) {
 
     UpdateItemRequest request = UpdateItemRequest.builder()
         .tableName(table)
         .key(Map.of(KEY_USER, b(userRecord.user)))
         .returnValues(ReturnValue.ALL_NEW)
-        .conditionExpression(
-            // there is no active processor+customer attribute
-            "attribute_not_exists(#processor_customer_id) " +
-                // or an attribute in the map with an inactive processor+customer
-                "AND attribute_not_exists(#processors_to_customer_ids.#processor_name)"
-        )
+        .conditionExpression("attribute_not_exists(#processor_customer_id)")
         .updateExpression("SET "
-            + "#customer_id = :customer_id, "
             + "#processor_customer_id = :processor_customer_id, "
-            + "#processors_to_customer_ids.#processor_name = :customer_id, "
             + "#accessed_at = :accessed_at"
         )
         .expressionAttributeNames(Map.of(
             "#accessed_at", KEY_ACCESSED_AT,
-            "#customer_id", KEY_CUSTOMER_ID,
-            "#processor_customer_id", KEY_PROCESSOR_ID_CUSTOMER_ID,
-            "#processor_name", activeProcessorCustomer.processor().name(),
-            "#processors_to_customer_ids", KEY_PROCESSOR_CUSTOMER_IDS_MAP
+            "#processor_customer_id", KEY_PROCESSOR_ID_CUSTOMER_ID
         ))
         .expressionAttributeValues(Map.of(
             ":accessed_at", n(updatedAt.getEpochSecond()),
-            ":customer_id", s(activeProcessorCustomer.customerId()),
             ":processor_customer_id", b(activeProcessorCustomer.toDynamoBytes())
         )).build();
 
@@ -350,8 +320,7 @@ public class SubscriptionManager {
         .thenApply(updateItemResponse -> Record.from(userRecord.user, updateItemResponse.attributes()))
         .exceptionallyCompose(throwable -> {
           if (Throwables.getRootCause(throwable) instanceof ConditionalCheckFailedException) {
-            return getUser(userRecord.user).thenApply(getItemResponse ->
-                Record.from(userRecord.user, getItemResponse.item()));
+            throw new ClientErrorException(Response.Status.CONFLICT);
           }
           Throwables.throwIfUnchecked(throwable);
           throw new CompletionException(throwable);
@@ -425,7 +394,7 @@ public class SubscriptionManager {
   }
 
   public CompletableFuture<Void> subscriptionLevelChanged(
-      byte[] user, Instant subscriptionLevelChangedAt, long level) {
+      byte[] user, Instant subscriptionLevelChangedAt, long level, String subscriptionId) {
     checkUserLength(user);
 
     UpdateItemRequest request = UpdateItemRequest.builder()
@@ -434,14 +403,17 @@ public class SubscriptionManager {
         .returnValues(ReturnValue.NONE)
         .updateExpression("SET "
             + "#accessed_at = :accessed_at, "
+            + "#subscription_id = :subscription_id, "
             + "#subscription_level = :subscription_level, "
             + "#subscription_level_changed_at = :subscription_level_changed_at")
         .expressionAttributeNames(Map.of(
             "#accessed_at", KEY_ACCESSED_AT,
+            "#subscription_id", KEY_SUBSCRIPTION_ID,
             "#subscription_level", KEY_SUBSCRIPTION_LEVEL,
             "#subscription_level_changed_at", KEY_SUBSCRIPTION_LEVEL_CHANGED_AT))
         .expressionAttributeValues(Map.of(
             ":accessed_at", n(subscriptionLevelChangedAt.getEpochSecond()),
+            ":subscription_id", s(subscriptionId),
             ":subscription_level", n(level),
             ":subscription_level_changed_at", n(subscriptionLevelChangedAt.getEpochSecond())))
         .build();

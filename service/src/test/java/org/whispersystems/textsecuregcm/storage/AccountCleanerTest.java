@@ -8,19 +8,19 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.Arrays;
-import java.util.LinkedList;
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.whispersystems.textsecuregcm.storage.AccountsManager.DeletionReason;
 
 class AccountCleanerTest {
@@ -34,6 +34,8 @@ class AccountCleanerTest {
   private final Device  deletedDisabledDevice    = mock(Device.class );
   private final Device  undeletedDisabledDevice  = mock(Device.class );
   private final Device  undeletedEnabledDevice   = mock(Device.class );
+
+  private ExecutorService deletionExecutor;
 
 
   @BeforeEach
@@ -64,11 +66,19 @@ class AccountCleanerTest {
     when(undeletedEnabledAccount.getNumber()).thenReturn("+14153333333");
     when(undeletedEnabledAccount.getLastSeen()).thenReturn(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(364));
     when(undeletedEnabledAccount.getUuid()).thenReturn(UUID.randomUUID());
+
+    deletionExecutor = Executors.newFixedThreadPool(2);
+  }
+
+  @AfterEach
+  void tearDown() throws InterruptedException {
+    deletionExecutor.shutdown();
+    deletionExecutor.awaitTermination(2, TimeUnit.SECONDS);
   }
 
   @Test
   void testAccounts() throws AccountDatabaseCrawlerRestartException, InterruptedException {
-    AccountCleaner accountCleaner = new AccountCleaner(accountsManager);
+    AccountCleaner accountCleaner = new AccountCleaner(accountsManager, deletionExecutor);
     accountCleaner.onCrawlStart();
     accountCleaner.timeAndProcessCrawlChunk(Optional.empty(), Arrays.asList(deletedDisabledAccount, undeletedDisabledAccount, undeletedEnabledAccount));
     accountCleaner.onCrawlEnd(Optional.empty());
@@ -77,27 +87,6 @@ class AccountCleanerTest {
     verify(accountsManager).delete(undeletedDisabledAccount, DeletionReason.EXPIRED);
     verify(accountsManager, never()).delete(eq(undeletedEnabledAccount), any());
 
-    verifyNoMoreInteractions(accountsManager);
-  }
-
-  @Test
-  void testMaxAccountUpdates() throws AccountDatabaseCrawlerRestartException, InterruptedException {
-    List<Account> accounts = new LinkedList<>();
-    accounts.add(undeletedEnabledAccount);
-
-    int activeExpiredAccountCount = AccountCleaner.MAX_ACCOUNT_DELETIONS_PER_CHUNK + 1;
-    for (int addedAccountCount = 0; addedAccountCount < activeExpiredAccountCount; addedAccountCount++) {
-      accounts.add(undeletedDisabledAccount);
-    }
-
-    accounts.add(deletedDisabledAccount);
-
-    AccountCleaner accountCleaner = new AccountCleaner(accountsManager);
-    accountCleaner.onCrawlStart();
-    accountCleaner.timeAndProcessCrawlChunk(Optional.empty(), accounts);
-    accountCleaner.onCrawlEnd(Optional.empty());
-
-    verify(accountsManager, times(AccountCleaner.MAX_ACCOUNT_DELETIONS_PER_CHUNK)).delete(undeletedDisabledAccount, AccountsManager.DeletionReason.EXPIRED);
     verifyNoMoreInteractions(accountsManager);
   }
 

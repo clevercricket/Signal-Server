@@ -101,6 +101,10 @@ public class Util {
     return param == null || param.length() == 0;
   }
 
+  public static boolean nonEmpty(String param) {
+    return !isEmpty(param);
+  }
+
   public static byte[] truncate(byte[] element, int length) {
     byte[] result = new byte[length];
     System.arraycopy(element, 0, result, 0, result.length);
@@ -138,15 +142,11 @@ public class Util {
     return parts;
   }
 
-  public static int toIntExact(long value) {
-    if ((int) value != value) {
-      throw new ArithmeticException("integer overflow");
-    }
-    return (int) value;
-  }
+  public static final long DAY_IN_MILLIS = 86400000L;
+  public static final long WEEK_IN_MILLIS = DAY_IN_MILLIS * 7;
 
   public static int currentDaysSinceEpoch(@Nonnull Clock clock) {
-    return toIntExact(clock.millis() / 1000 / 60/ 60 / 24);
+    return Math.toIntExact(clock.millis() / DAY_IN_MILLIS);
   }
 
   public static void sleep(long i) {
@@ -180,15 +180,40 @@ public class Util {
   }
 
   public static long todayInMillis(Clock clock) {
-    return TimeUnit.DAYS.toMillis(TimeUnit.MILLISECONDS.toDays(clock.instant().toEpochMilli()));
+    return TimeUnit.DAYS.toMillis(TimeUnit.MILLISECONDS.toDays(clock.millis()));
   }
 
   public static long todayInMillisGivenOffsetFromNow(Clock clock, Duration offset) {
-    final long currentTimeSeconds = offset.addTo(clock.instant()).getLong(ChronoField.INSTANT_SECONDS);
-    return TimeUnit.DAYS.toMillis(TimeUnit.SECONDS.toDays(currentTimeSeconds));
+    final long ms = offset.toMillis() + clock.millis();
+    return TimeUnit.DAYS.toMillis(TimeUnit.MILLISECONDS.toDays(ms));
   }
 
   public static Optional<String> findBestLocale(List<LanguageRange> priorityList, Collection<String> supportedLocales) {
     return Optional.ofNullable(Locale.lookupTag(priorityList, supportedLocales));
   }
+
+  /**
+   * Map ints to non-negative ints.
+   * <br>
+   * Unlike Math.abs this method handles Integer.MIN_VALUE correctly.
+   *
+   * @param n any int value
+   * @return an int value guaranteed to be non-negative
+   */
+  public static int ensureNonNegativeInt(int n) {
+    return n == Integer.MIN_VALUE ? 0 : Math.abs(n);
+  }
+
+  /**
+   * Map longs to non-negative longs.
+   * <br>
+   * Unlike Math.abs this method handles Long.MIN_VALUE correctly.
+   *
+   * @param n any long value
+   * @return a long value guaranteed to be non-negative
+   */
+  public static long ensureNonNegativeLong(long n) {
+    return n == Long.MIN_VALUE ? 0 : Math.abs(n);
+  }
+
 }

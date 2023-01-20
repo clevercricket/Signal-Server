@@ -11,19 +11,25 @@ import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.SharedMetricRegistries;
 import com.codahale.metrics.annotation.Timed;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.net.HttpHeaders;
 import com.google.i18n.phonenumbers.NumberParseException;
 import com.google.i18n.phonenumbers.PhoneNumberUtil;
 import com.google.i18n.phonenumbers.Phonenumber;
 import io.dropwizard.auth.Auth;
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
+import java.io.IOException;
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletionException;
 import javax.annotation.Nullable;
 import javax.servlet.http.HttpServletRequest;
 import javax.validation.Valid;
@@ -61,6 +67,8 @@ import org.whispersystems.textsecuregcm.auth.StoredRegistrationLock;
 import org.whispersystems.textsecuregcm.auth.StoredVerificationCode;
 import org.whispersystems.textsecuregcm.auth.TurnToken;
 import org.whispersystems.textsecuregcm.auth.TurnTokenGenerator;
+import org.whispersystems.textsecuregcm.captcha.AssessmentResult;
+import org.whispersystems.textsecuregcm.captcha.CaptchaChecker;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.entities.AccountAttributes;
@@ -82,13 +90,12 @@ import org.whispersystems.textsecuregcm.entities.UsernameResponse;
 import org.whispersystems.textsecuregcm.limits.RateLimiter;
 import org.whispersystems.textsecuregcm.limits.RateLimiters;
 import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
+import org.whispersystems.textsecuregcm.push.ClientPresenceManager;
 import org.whispersystems.textsecuregcm.push.PushNotification;
 import org.whispersystems.textsecuregcm.push.PushNotificationManager;
-import org.whispersystems.textsecuregcm.recaptcha.RecaptchaClient;
 import org.whispersystems.textsecuregcm.registration.ClientType;
 import org.whispersystems.textsecuregcm.registration.MessageTransport;
 import org.whispersystems.textsecuregcm.registration.RegistrationServiceClient;
-import org.whispersystems.textsecuregcm.storage.AbusiveHostRules;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.ChangeNumberManager;
@@ -98,7 +105,7 @@ import org.whispersystems.textsecuregcm.storage.StoredVerificationCodeManager;
 import org.whispersystems.textsecuregcm.storage.UsernameNotAvailableException;
 import org.whispersystems.textsecuregcm.storage.UsernameReservationNotFoundException;
 import org.whispersystems.textsecuregcm.util.Constants;
-import org.whispersystems.textsecuregcm.util.ForwardedIpUtil;
+import org.whispersystems.textsecuregcm.util.HeaderUtils;
 import org.whispersystems.textsecuregcm.util.Hex;
 import org.whispersystems.textsecuregcm.util.ImpossiblePhoneNumberException;
 import org.whispersystems.textsecuregcm.util.NonNormalizedPhoneNumberException;
@@ -112,8 +119,6 @@ public class AccountController {
 
   private final Logger         logger                   = LoggerFactory.getLogger(AccountController.class);
   private final MetricRegistry metricRegistry           = SharedMetricRegistries.getOrCreate(Constants.METRICS_NAME);
-  private final Meter          blockedHostMeter         = metricRegistry.meter(name(AccountController.class, "blocked_host"             ));
-  private final Meter          countryFilterApplicable  = metricRegistry.meter(name(AccountController.class, "country_filter_applicable"));
   private final Meter          countryFilteredHostMeter = metricRegistry.meter(name(AccountController.class, "country_limited_host"     ));
   private final Meter          rateLimitedHostMeter     = metricRegistry.meter(name(AccountController.class, "rate_limited_host"        ));
   private final Meter          rateLimitedPrefixMeter   = metricRegistry.meter(name(AccountController.class, "rate_limited_prefix"      ));
@@ -125,7 +130,15 @@ public class AccountController {
   private static final String CAPTCHA_ATTEMPT_COUNTER_NAME = name(AccountController.class, "captcha");
   private static final String CHALLENGE_ISSUED_COUNTER_NAME = name(AccountController.class, "challengeIssued");
 
+  private static final DistributionSummary REREGISTRATION_IDLE_DAYS_DISTRIBUTION = DistributionSummary
+      .builder(name(AccountController.class, "reregistrationIdleDays"))
+      .publishPercentiles(0.75, 0.95, 0.99, 0.999)
+      .distributionStatisticExpiry(Duration.ofHours(2))
+      .register(Metrics.globalRegistry);
+
   private static final String NONSTANDARD_USERNAME_COUNTER_NAME = name(AccountController.class, "nonStandardUsername");
+
+  private static final String LOCKED_ACCOUNT_COUNTER_NAME = name(AccountController.class, "lockedAccount");
 
   private static final String CHALLENGE_PRESENT_TAG_NAME = "present";
   private static final String CHALLENGE_MATCH_TAG_NAME = "matches";
@@ -139,50 +152,77 @@ public class AccountController {
   private static final String REGION_CODE_TAG_NAME = "regionCode";
   private static final String VERIFICATION_TRANSPORT_TAG_NAME = "transport";
   private static final String SCORE_TAG_NAME = "score";
+  private static final String LOCK_REASON_TAG_NAME = "lockReason";
+  private static final String ALREADY_LOCKED_TAG_NAME = "alreadyLocked";
 
 
   private final StoredVerificationCodeManager      pendingAccounts;
   private final AccountsManager                    accounts;
-  private final AbusiveHostRules                   abusiveHostRules;
   private final RateLimiters                       rateLimiters;
   private final RegistrationServiceClient          registrationServiceClient;
   private final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager;
   private final TurnTokenGenerator                 turnTokenGenerator;
   private final Map<String, Integer>               testDevices;
-  private final RecaptchaClient recaptchaClient;
+  private final CaptchaChecker                     captchaChecker;
   private final PushNotificationManager            pushNotificationManager;
   private final ExternalServiceCredentialGenerator backupServiceCredentialGenerator;
 
   private final ChangeNumberManager changeNumberManager;
+  private final Clock clock;
+
+  private final ClientPresenceManager clientPresenceManager;
 
   @VisibleForTesting
   static final Duration REGISTRATION_RPC_TIMEOUT = Duration.ofSeconds(15);
 
-  public AccountController(StoredVerificationCodeManager pendingAccounts,
-                           AccountsManager accounts,
-                           AbusiveHostRules abusiveHostRules,
-                           RateLimiters rateLimiters,
-                           RegistrationServiceClient registrationServiceClient,
-                           DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager,
-                           TurnTokenGenerator turnTokenGenerator,
-                           Map<String, Integer> testDevices,
-                           RecaptchaClient recaptchaClient,
-                           PushNotificationManager pushNotificationManager,
-                           ChangeNumberManager changeNumberManager,
-                           ExternalServiceCredentialGenerator backupServiceCredentialGenerator)
-  {
-    this.pendingAccounts                   = pendingAccounts;
-    this.accounts                          = accounts;
-    this.abusiveHostRules                  = abusiveHostRules;
-    this.rateLimiters                      = rateLimiters;
-    this.registrationServiceClient         = registrationServiceClient;
-    this.dynamicConfigurationManager       = dynamicConfigurationManager;
-    this.testDevices                       = testDevices;
-    this.turnTokenGenerator                = turnTokenGenerator;
-    this.recaptchaClient = recaptchaClient;
-    this.pushNotificationManager           = pushNotificationManager;
+  public AccountController(
+      StoredVerificationCodeManager pendingAccounts,
+      AccountsManager accounts,
+      RateLimiters rateLimiters,
+      RegistrationServiceClient registrationServiceClient,
+      DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager,
+      TurnTokenGenerator turnTokenGenerator,
+      Map<String, Integer> testDevices,
+      CaptchaChecker captchaChecker,
+      PushNotificationManager pushNotificationManager,
+      ChangeNumberManager changeNumberManager,
+      ExternalServiceCredentialGenerator backupServiceCredentialGenerator,
+      ClientPresenceManager clientPresenceManager,
+      Clock clock
+  ) {
+    this.pendingAccounts = pendingAccounts;
+    this.accounts = accounts;
+    this.rateLimiters = rateLimiters;
+    this.registrationServiceClient = registrationServiceClient;
+    this.dynamicConfigurationManager = dynamicConfigurationManager;
+    this.testDevices = testDevices;
+    this.turnTokenGenerator = turnTokenGenerator;
+    this.captchaChecker = captchaChecker;
+    this.pushNotificationManager = pushNotificationManager;
     this.backupServiceCredentialGenerator = backupServiceCredentialGenerator;
     this.changeNumberManager = changeNumberManager;
+    this.clientPresenceManager = clientPresenceManager;
+    this.clock = clock;
+  }
+
+  @VisibleForTesting
+  public AccountController(
+      StoredVerificationCodeManager pendingAccounts,
+      AccountsManager accounts,
+      RateLimiters rateLimiters,
+      RegistrationServiceClient registrationServiceClient,
+      DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager,
+      TurnTokenGenerator turnTokenGenerator,
+      Map<String, Integer> testDevices,
+      CaptchaChecker captchaChecker,
+      PushNotificationManager pushNotificationManager,
+      ChangeNumberManager changeNumberManager,
+      ExternalServiceCredentialGenerator backupServiceCredentialGenerator
+  ) {
+    this(pendingAccounts, accounts, rateLimiters,
+        registrationServiceClient, dynamicConfigurationManager, turnTokenGenerator, testDevices, captchaChecker,
+        pushNotificationManager, changeNumberManager,
+        backupServiceCredentialGenerator, null, Clock.systemUTC());
   }
 
   @Timed
@@ -193,7 +233,7 @@ public class AccountController {
                              @PathParam("token") String pushToken,
                              @PathParam("number") String number,
                              @QueryParam("voip") @DefaultValue("true") boolean useVoip)
-      throws ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException {
+      throws ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException, RateLimitExceededException {
 
     final PushNotification.TokenType tokenType = switch(pushType) {
       case "apn" -> useVoip ? PushNotification.TokenType.APN_VOIP : PushNotification.TokenType.APN;
@@ -203,9 +243,18 @@ public class AccountController {
 
     Util.requireNormalizedNumber(number);
 
-    String pushChallenge = generatePushChallenge();
-    StoredVerificationCode storedVerificationCode =
-        new StoredVerificationCode(null, System.currentTimeMillis(), pushChallenge, null, null);
+    final Phonenumber.PhoneNumber phoneNumber;
+    try {
+      phoneNumber = PhoneNumberUtil.getInstance().parse(number, null);
+    } catch (final NumberParseException e) {
+      // This should never happen since we just verified that the number is already normalized
+      throw new BadRequestException("Bad phone number");
+    }
+
+    final String pushChallenge = generatePushChallenge();
+    final byte[] sessionId = createRegistrationSession(phoneNumber);
+    final StoredVerificationCode storedVerificationCode =
+        new StoredVerificationCode(null, clock.millis(), pushChallenge, sessionId);
 
     pendingAccounts.store(number, storedVerificationCode);
     pushNotificationManager.sendRegistrationChallengeNotification(pushToken, tokenType, storedVerificationCode.pushCode());
@@ -220,25 +269,26 @@ public class AccountController {
   @Produces(MediaType.APPLICATION_JSON)
   public Response createAccount(@PathParam("transport")         String transport,
                                 @PathParam("number")            String number,
-                                @HeaderParam("X-Forwarded-For") String forwardedFor,
-                                @HeaderParam("User-Agent")      String userAgent,
-                                @HeaderParam("Accept-Language") Optional<String> acceptLanguage,
+                                @HeaderParam(HttpHeaders.X_FORWARDED_FOR) String forwardedFor,
+                                @HeaderParam(HttpHeaders.USER_AGENT)      String userAgent,
+                                @HeaderParam(HttpHeaders.ACCEPT_LANGUAGE) Optional<String> acceptLanguage,
                                 @QueryParam("client")           Optional<String> client,
                                 @QueryParam("captcha")          Optional<String> captcha,
                                 @QueryParam("challenge")        Optional<String> pushChallenge)
-      throws RateLimitExceededException, ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException {
+      throws RateLimitExceededException, ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException, IOException {
 
     Util.requireNormalizedNumber(number);
 
-    final String sourceHost = ForwardedIpUtil.getMostRecentProxy(forwardedFor).orElseThrow();
+    final String sourceHost = HeaderUtils.getMostRecentProxy(forwardedFor).orElseThrow();
     final Optional<StoredVerificationCode> maybeStoredVerificationCode = pendingAccounts.getCodeForNumber(number);
 
     final String countryCode = Util.getCountryCode(number);
     final String region = Util.getRegion(number);
 
     // if there's a captcha, assess it, otherwise check if we need a captcha
-    final Optional<RecaptchaClient.AssessmentResult> assessmentResult = captcha
-        .map(captchaToken -> recaptchaClient.verify(captchaToken, sourceHost));
+    final Optional<AssessmentResult> assessmentResult = captcha.isPresent()
+        ? Optional.of(captchaChecker.verify(captcha.get(), sourceHost))
+        : Optional.empty();
 
     assessmentResult.ifPresent(result ->
         Metrics.counter(CAPTCHA_ATTEMPT_COUNTER_NAME, Tags.of(
@@ -306,13 +356,20 @@ public class AccountController {
       }
     }).orElse(ClientType.UNKNOWN);
 
-    final byte[] sessionId = registrationServiceClient.sendRegistrationCode(phoneNumber,
-        messageTransport, clientType, acceptLanguage.orElse(null), REGISTRATION_RPC_TIMEOUT).join();
+    // During the transition to explicit session creation, some previously-stored records may not have a session ID;
+    // after the transition, we can assume that any existing record has an associated session ID.
+    final byte[] sessionId =  maybeStoredVerificationCode.isPresent() && maybeStoredVerificationCode.get().sessionId() != null ?
+        maybeStoredVerificationCode.get().sessionId() : createRegistrationSession(phoneNumber);
+
+    registrationServiceClient.sendRegistrationCode(sessionId,
+        messageTransport,
+        clientType,
+        acceptLanguage.orElse(null),
+        REGISTRATION_RPC_TIMEOUT).join();
 
     final StoredVerificationCode storedVerificationCode = new StoredVerificationCode(null,
-        System.currentTimeMillis(),
+        clock.millis(),
         maybeStoredVerificationCode.map(StoredVerificationCode::pushCode).orElse(null),
-        null,
         sessionId);
 
     pendingAccounts.store(number, storedVerificationCode);
@@ -333,9 +390,9 @@ public class AccountController {
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/code/{verification_code}")
   public AccountIdentityResponse verifyAccount(@PathParam("verification_code") String verificationCode,
-                                             @HeaderParam("Authorization") BasicAuthorizationHeader authorizationHeader,
-                                             @HeaderParam("X-Signal-Agent") String signalAgent,
-                                             @HeaderParam("User-Agent") String userAgent,
+                                             @HeaderParam(HttpHeaders.AUTHORIZATION) BasicAuthorizationHeader authorizationHeader,
+                                             @HeaderParam(HeaderUtils.X_SIGNAL_AGENT) String signalAgent,
+                                             @HeaderParam(HttpHeaders.USER_AGENT) String userAgent,
                                              @QueryParam("transfer") Optional<Boolean> availableForTransfer,
                                              @NotNull @Valid AccountAttributes accountAttributes)
       throws RateLimitExceededException, InterruptedException {
@@ -348,13 +405,9 @@ public class AccountController {
     // Note that successful verification depends on being able to find a stored verification code for the given number.
     // We check that numbers are normalized before we store verification codes, and so don't need to re-assert
     // normalization here.
-    final Optional<StoredVerificationCode> maybeStoredVerificationCode = pendingAccounts.getCodeForNumber(number);
-
-    final boolean codeVerified = maybeStoredVerificationCode.map(storedVerificationCode ->
-            storedVerificationCode.sessionId() != null ?
-                registrationServiceClient.checkVerificationCode(storedVerificationCode.sessionId(),
-                    verificationCode, REGISTRATION_RPC_TIMEOUT).join() :
-                storedVerificationCode.isValid(verificationCode))
+    final boolean codeVerified = pendingAccounts.getCodeForNumber(number).map(storedVerificationCode ->
+            registrationServiceClient.checkVerificationCode(storedVerificationCode.sessionId(),
+                verificationCode, REGISTRATION_RPC_TIMEOUT).join())
         .orElse(false);
 
     if (!codeVerified) {
@@ -362,6 +415,12 @@ public class AccountController {
     }
 
     Optional<Account> existingAccount = accounts.getByE164(number);
+
+    existingAccount.ifPresent(account -> {
+      Instant accountLastSeen = Instant.ofEpochMilli(account.getLastSeen());
+      Duration timeSinceLastSeen = Duration.between(accountLastSeen, Instant.now());
+      REREGISTRATION_IDLE_DAYS_DISTRIBUTION.record(timeSinceLastSeen.toDays());
+    });
 
     if (existingAccount.isPresent()) {
       verifyRegistrationLock(existingAccount.get(), accountAttributes.getRegistrationLock());
@@ -397,7 +456,7 @@ public class AccountController {
   @Produces(MediaType.APPLICATION_JSON)
   public AccountIdentityResponse changeNumber(@Auth final AuthenticatedAccount authenticatedAccount,
       @NotNull @Valid final ChangePhoneNumberRequest request,
-      @HeaderParam("User-Agent") String userAgent)
+      @HeaderParam(HttpHeaders.USER_AGENT) String userAgent)
       throws RateLimitExceededException, InterruptedException, ImpossiblePhoneNumberException, NonNormalizedPhoneNumberException {
 
     if (!authenticatedAccount.getAuthenticatedDevice().isMaster()) {
@@ -586,7 +645,7 @@ public class AccountController {
   @Produces(MediaType.APPLICATION_JSON)
   @ChangesDeviceEnabledState
   public void setAccountAttributes(@Auth DisabledPermittedAuthenticatedAccount disabledPermittedAuth,
-      @HeaderParam("X-Signal-Agent") String userAgent,
+      @HeaderParam(HeaderUtils.X_SIGNAL_AGENT) String userAgent,
       @NotNull @Valid AccountAttributes attributes) {
     Account account = disabledPermittedAuth.getAccount();
     long deviceId = disabledPermittedAuth.getAuthenticatedDevice().getId();
@@ -642,7 +701,7 @@ public class AccountController {
   @Produces(MediaType.APPLICATION_JSON)
   @Consumes(MediaType.APPLICATION_JSON)
   public ReserveUsernameResponse reserveUsername(@Auth AuthenticatedAccount auth,
-      @HeaderParam("X-Signal-Agent") String userAgent,
+      @HeaderParam(HeaderUtils.X_SIGNAL_AGENT) String userAgent,
       @NotNull @Valid ReserveUsernameRequest usernameRequest) throws RateLimitExceededException {
 
     rateLimiters.getUsernameReserveLimiter().validate(auth.getAccount().getUuid());
@@ -664,7 +723,7 @@ public class AccountController {
   @Produces(MediaType.APPLICATION_JSON)
   @Consumes(MediaType.APPLICATION_JSON)
   public UsernameResponse confirmUsername(@Auth AuthenticatedAccount auth,
-      @HeaderParam("X-Signal-Agent") String userAgent,
+      @HeaderParam(HeaderUtils.X_SIGNAL_AGENT) String userAgent,
       @NotNull @Valid ConfirmUsernameRequest confirmRequest) throws RateLimitExceededException {
     rateLimiters.getUsernameSetLimiter().validate(auth.getAccount().getUuid());
 
@@ -688,7 +747,7 @@ public class AccountController {
   @Consumes(MediaType.APPLICATION_JSON)
   public UsernameResponse setUsername(
       @Auth AuthenticatedAccount auth,
-      @HeaderParam("X-Signal-Agent") String userAgent,
+      @HeaderParam(HeaderUtils.X_SIGNAL_AGENT) String userAgent,
       @NotNull @Valid UsernameRequest usernameRequest) throws RateLimitExceededException {
     rateLimiters.getUsernameSetLimiter().validate(auth.getAccount().getUuid());
     checkUsername(usernameRequest.existingUsername(), userAgent);
@@ -710,8 +769,8 @@ public class AccountController {
   @Path("/username/{username}")
   @Produces(MediaType.APPLICATION_JSON)
   public AccountIdentifierResponse lookupUsername(
-      @HeaderParam("X-Signal-Agent") final String userAgent,
-      @HeaderParam("X-Forwarded-For") final String forwardedFor,
+      @HeaderParam(HeaderUtils.X_SIGNAL_AGENT) final String userAgent,
+      @HeaderParam(HttpHeaders.X_FORWARDED_FOR) final String forwardedFor,
       @PathParam("username") final String username,
       @Context final HttpServletRequest request) throws RateLimitExceededException {
 
@@ -734,7 +793,7 @@ public class AccountController {
   @HEAD
   @Path("/account/{uuid}")
   public Response accountExists(
-      @HeaderParam("X-Forwarded-For") final String forwardedFor,
+      @HeaderParam(HttpHeaders.X_FORWARDED_FOR) final String forwardedFor,
       @PathParam("uuid") final UUID uuid,
       @Context HttpServletRequest request) throws RateLimitExceededException {
 
@@ -752,7 +811,7 @@ public class AccountController {
   }
 
   private void rateLimitByClientIp(final RateLimiter rateLimiter, final String forwardedFor) throws RateLimitExceededException {
-    final String mostRecentProxy = ForwardedIpUtil.getMostRecentProxy(forwardedFor)
+    final String mostRecentProxy = HeaderUtils.getMostRecentProxy(forwardedFor)
         .orElseThrow(() -> {
           // Missing/malformed Forwarded-For, so we cannot check for a rate-limit.
           // This shouldn't happen, so conservatively assume we're over the rate-limit
@@ -776,25 +835,51 @@ public class AccountController {
         rateLimiters.getPinLimiter().validate(existingAccount.getNumber());
       }
 
+      final String phoneNumber = existingAccount.getNumber();
+
       if (!existingRegistrationLock.verify(clientRegistrationLock)) {
+        // At this point, the client verified ownership of the phone number but doesn’t have the reglock PIN.
+        // Freezing the existing account credentials will definitively start the reglock timeout.
+        // Until the timeout, the current reglock can still be supplied,
+        // along with phone number verification, to restore access.
+        /* boolean alreadyLocked = existingAccount.hasLockedCredentials();
+        Metrics.counter(LOCKED_ACCOUNT_COUNTER_NAME,
+                LOCK_REASON_TAG_NAME, "verifiedNumberFailedReglock",
+                ALREADY_LOCKED_TAG_NAME, Boolean.toString(alreadyLocked))
+            .increment();
+
+        final Account updatedAccount;
+        if (!alreadyLocked) {
+          updatedAccount = accounts.update(existingAccount, Account::lockAuthenticationCredentials);
+        } else {
+          updatedAccount = existingAccount;
+        }
+
+        List<Long> deviceIds = updatedAccount.getDevices().stream().map(Device::getId).toList();
+        clientPresenceManager.disconnectAllPresences(updatedAccount.getUuid(), deviceIds); */
+
         throw new WebApplicationException(Response.status(423)
             .entity(new RegistrationLockFailure(existingRegistrationLock.getTimeRemaining(),
                 existingRegistrationLock.needsFailureCredentials() ? existingBackupCredentials : null))
             .build());
       }
 
-      rateLimiters.getPinLimiter().clear(existingAccount.getNumber());
+      rateLimiters.getPinLimiter().clear(phoneNumber);
     }
   }
 
-  private boolean pushChallengeMatches(
+  @VisibleForTesting
+  static boolean pushChallengeMatches(
       final String number,
       final Optional<String> pushChallenge,
       final Optional<StoredVerificationCode> storedVerificationCode) {
+
     final String countryCode = Util.getCountryCode(number);
     final String region = Util.getRegion(number);
-    Optional<String> storedPushChallenge = storedVerificationCode.map(StoredVerificationCode::pushCode);
-    boolean match = Optionals.zipWith(pushChallenge, storedPushChallenge, String::equals).orElse(false);
+    final Optional<String> storedPushChallenge = storedVerificationCode.map(StoredVerificationCode::pushCode);
+
+    final boolean match = Optionals.zipWith(pushChallenge, storedPushChallenge, String::equals).orElse(false);
+
     Metrics.counter(PUSH_CHALLENGE_COUNTER_NAME,
             COUNTRY_CODE_TAG_NAME, countryCode,
             REGION_TAG_NAME, region,
@@ -802,6 +887,7 @@ public class AccountController {
             CHALLENGE_PRESENT_TAG_NAME, Boolean.toString(pushChallenge.isPresent()),
             CHALLENGE_MATCH_TAG_NAME, Boolean.toString(match))
         .increment();
+
     return match;
   }
 
@@ -823,26 +909,12 @@ public class AccountController {
     boolean countryFiltered = captchaConfig.getSignupCountryCodes().contains(countryCode) ||
         captchaConfig.getSignupRegions().contains(region);
 
-    if (abusiveHostRules.isBlocked(sourceHost)) {
-      blockedHostMeter.mark();
-      logger.info("Blocked host: {}, {}, {} ({})", transport, number, sourceHost, forwardedFor);
-      if (countryFiltered) {
-        // this host was caught in the abusiveHostRules filter, but
-        // would be caught by country filter as well
-        countryFilterApplicable.mark();
-      }
-      return true;
-    }
-
     try {
       rateLimiters.getSmsVoiceIpLimiter().validate(sourceHost);
     } catch (RateLimitExceededException e) {
       logger.info("Rate limit exceeded: {}, {}, {} ({})", transport, number, sourceHost, forwardedFor);
       rateLimitedHostMeter.mark();
-      if (shouldAutoBlock(sourceHost)) {
-        logger.info("Auto-block: {}", sourceHost);
-        abusiveHostRules.setBlockedHost(sourceHost);
-      }
+
       return true;
     }
 
@@ -851,10 +923,7 @@ public class AccountController {
     } catch (RateLimitExceededException e) {
       logger.info("Prefix rate limit exceeded: {}, {}, {} ({})", transport, number, sourceHost, forwardedFor);
       rateLimitedPrefixMeter.mark();
-      if (shouldAutoBlock(sourceHost)) {
-        logger.info("Auto-block: {}", sourceHost);
-        abusiveHostRules.setBlockedHost(sourceHost);
-      }
+
       return true;
     }
 
@@ -862,6 +931,7 @@ public class AccountController {
       countryFilteredHostMeter.mark();
       return true;
     }
+
     return false;
   }
 
@@ -881,21 +951,30 @@ public class AccountController {
     }
   }
 
-  private boolean shouldAutoBlock(String sourceHost) {
-    try {
-      rateLimiters.getAutoBlockLimiter().validate(sourceHost);
-    } catch (RateLimitExceededException e) {
-      return true;
-    }
-
-    return false;
-  }
-
   private String generatePushChallenge() {
     SecureRandom random    = new SecureRandom();
     byte[]       challenge = new byte[16];
     random.nextBytes(challenge);
 
     return Hex.toStringCondensed(challenge);
+  }
+
+  private byte[] createRegistrationSession(final Phonenumber.PhoneNumber phoneNumber) throws RateLimitExceededException {
+
+    try {
+      return registrationServiceClient.createRegistrationSession(phoneNumber, REGISTRATION_RPC_TIMEOUT).join();
+    } catch (final CompletionException e) {
+      Throwable cause = e;
+
+      while (cause instanceof CompletionException) {
+        cause = cause.getCause();
+      }
+
+      if (cause instanceof RateLimitExceededException rateLimitExceededException) {
+        throw rateLimitExceededException;
+      }
+
+      throw e;
+    }
   }
 }

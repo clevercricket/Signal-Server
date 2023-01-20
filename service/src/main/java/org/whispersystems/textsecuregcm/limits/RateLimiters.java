@@ -15,7 +15,6 @@ public class RateLimiters {
   private final RateLimiter voiceDestinationDailyLimiter;
   private final RateLimiter smsVoiceIpLimiter;
   private final RateLimiter smsVoicePrefixLimiter;
-  private final RateLimiter autoBlockLimiter;
   private final RateLimiter verifyLimiter;
   private final RateLimiter pinLimiter;
 
@@ -30,6 +29,8 @@ public class RateLimiters {
 
   private final RateLimiter profileLimiter;
   private final RateLimiter stickerPackLimiter;
+
+  private final RateLimiter artPackLimiter;
   private final RateLimiter usernameLookupLimiter;
   private final RateLimiter usernameSetLimiter;
 
@@ -59,10 +60,6 @@ public class RateLimiters {
     this.smsVoicePrefixLimiter = new RateLimiter(cacheCluster, "smsVoicePrefix",
                                                  config.getSmsVoicePrefix().getBucketSize(),
                                                  config.getSmsVoicePrefix().getLeakRatePerMinute());
-
-    this.autoBlockLimiter = new RateLimiter(cacheCluster, "autoBlock",
-                                            config.getAutoBlock().getBucketSize(),
-                                            config.getAutoBlock().getLeakRatePerMinute());
 
     this.verifyLimiter = new LockingRateLimiter(cacheCluster, "verify",
                                                 config.getVerifyNumber().getBucketSize(),
@@ -103,6 +100,10 @@ public class RateLimiters {
     this.stickerPackLimiter = new RateLimiter(cacheCluster, "stickerPack",
                                               config.getStickerPack().getBucketSize(),
                                               config.getStickerPack().getLeakRatePerMinute());
+
+    this.artPackLimiter = new RateLimiter(cacheCluster, "artPack",
+        config.getArtPack().getBucketSize(),
+        config.getArtPack().getLeakRatePerMinute());
 
     this.usernameLookupLimiter = new RateLimiter(cacheCluster, "usernameLookup",
                                                  config.getUsernameLookup().getBucketSize(),
@@ -158,10 +159,6 @@ public class RateLimiters {
     return smsVoicePrefixLimiter;
   }
 
-  public RateLimiter getAutoBlockLimiter() {
-    return autoBlockLimiter;
-  }
-
   public RateLimiter getVoiceDestinationLimiter() {
     return voiceDestinationLimiter;
   }
@@ -188,6 +185,10 @@ public class RateLimiters {
 
   public RateLimiter getStickerPackLimiter() {
     return stickerPackLimiter;
+  }
+
+  public RateLimiter getArtPackLimiter() {
+    return artPackLimiter;
   }
 
   public RateLimiter getUsernameLookupLimiter() {

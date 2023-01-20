@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2021 Signal Messenger, LLC
+ * Copyright 2013 Signal Messenger, LLC
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 package org.whispersystems.textsecuregcm;
@@ -19,20 +19,21 @@ import org.whispersystems.textsecuregcm.configuration.ApnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AppConfigConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AwsAttachmentsConfiguration;
 import org.whispersystems.textsecuregcm.configuration.BadgesConfiguration;
-import org.whispersystems.textsecuregcm.configuration.BoostConfiguration;
+import org.whispersystems.textsecuregcm.configuration.BraintreeConfiguration;
 import org.whispersystems.textsecuregcm.configuration.CdnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.DatadogConfiguration;
 import org.whispersystems.textsecuregcm.configuration.DirectoryConfiguration;
 import org.whispersystems.textsecuregcm.configuration.DirectoryV2Configuration;
-import org.whispersystems.textsecuregcm.configuration.DonationConfiguration;
 import org.whispersystems.textsecuregcm.configuration.DynamoDbClientConfiguration;
 import org.whispersystems.textsecuregcm.configuration.DynamoDbTables;
 import org.whispersystems.textsecuregcm.configuration.FcmConfiguration;
 import org.whispersystems.textsecuregcm.configuration.GcpAttachmentsConfiguration;
-import org.whispersystems.textsecuregcm.configuration.GiftConfiguration;
+import org.whispersystems.textsecuregcm.configuration.HCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.MaxDeviceConfiguration;
 import org.whispersystems.textsecuregcm.configuration.MessageCacheConfiguration;
+import org.whispersystems.textsecuregcm.configuration.OneTimeDonationConfiguration;
 import org.whispersystems.textsecuregcm.configuration.PaymentsServiceConfiguration;
+import org.whispersystems.textsecuregcm.configuration.ArtServiceConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RateLimitsConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RecaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RedisClusterConfiguration;
@@ -63,6 +64,11 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @JsonProperty
   private StripeConfiguration stripe;
+
+  @NotNull
+  @Valid
+  @JsonProperty
+  private BraintreeConfiguration braintree;
 
   @NotNull
   @Valid
@@ -192,6 +198,11 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
+  private HCaptchaConfiguration hCaptcha;
+
+  @Valid
+  @NotNull
+  @JsonProperty
   private SecureStorageServiceConfiguration storageService;
 
   @Valid
@@ -203,6 +214,11 @@ public class WhisperServerConfiguration extends Configuration {
   @NotNull
   @JsonProperty
   private PaymentsServiceConfiguration paymentsService;
+
+  @Valid
+  @NotNull
+  @JsonProperty
+  private ArtServiceConfiguration artService;
 
   @Valid
   @NotNull
@@ -222,11 +238,6 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @NotNull
   @JsonProperty
-  private DonationConfiguration donation;
-
-  @Valid
-  @NotNull
-  @JsonProperty
   private BadgesConfiguration badges;
 
   @Valid
@@ -237,12 +248,7 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @JsonProperty
   @NotNull
-  private BoostConfiguration boost;
-
-  @Valid
-  @JsonProperty
-  @NotNull
-  private GiftConfiguration gift;
+  private OneTimeDonationConfiguration oneTimeDonations;
 
   @Valid
   @NotNull
@@ -271,6 +277,10 @@ public class WhisperServerConfiguration extends Configuration {
     return stripe;
   }
 
+  public BraintreeConfiguration getBraintree() {
+    return braintree;
+  }
+
   public DynamoDbClientConfiguration getDynamoDbClientConfiguration() {
     return dynamoDbClientConfiguration;
   }
@@ -281,6 +291,10 @@ public class WhisperServerConfiguration extends Configuration {
 
   public RecaptchaConfiguration getRecaptchaConfiguration() {
     return recaptcha;
+  }
+
+  public HCaptchaConfiguration getHCaptchaConfiguration() {
+    return hCaptcha;
   }
 
   public VoiceVerificationConfiguration getVoiceVerificationConfiguration() {
@@ -397,6 +411,10 @@ public class WhisperServerConfiguration extends Configuration {
     return paymentsService;
   }
 
+  public ArtServiceConfiguration getArtServiceConfiguration() {
+    return artService;
+  }
+
   public ZkConfig getZkConfig() {
     return zkConfig;
   }
@@ -409,10 +427,6 @@ public class WhisperServerConfiguration extends Configuration {
     return appConfig;
   }
 
-  public DonationConfiguration getDonationConfiguration() {
-    return donation;
-  }
-
   public BadgesConfiguration getBadges() {
     return badges;
   }
@@ -421,12 +435,8 @@ public class WhisperServerConfiguration extends Configuration {
     return subscription;
   }
 
-  public BoostConfiguration getBoost() {
-    return boost;
-  }
-
-  public GiftConfiguration getGift() {
-    return gift;
+  public OneTimeDonationConfiguration getOneTimeDonations() {
+    return oneTimeDonations;
   }
 
   public ReportMessageConfiguration getReportMessageConfiguration() {

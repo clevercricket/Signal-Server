@@ -16,6 +16,7 @@ public enum SubscriptionProcessor {
   // because provider IDs are stored, they should not be reused, and great care
   // must be used if a provider is removed from the list
   STRIPE(1),
+  BRAINTREE(2),
   ;
 
   private static final Map<Integer, SubscriptionProcessor> IDS_TO_PROCESSORS = new HashMap<>();
@@ -35,7 +36,7 @@ public enum SubscriptionProcessor {
   private final byte id;
 
   SubscriptionProcessor(int id) {
-    if (id > 256) {
+    if (id > 255) {
       throw new IllegalArgumentException("ID must fit in one byte: " + id);
     }
 

@@ -143,7 +143,7 @@ public class DeleteUserCommand extends EnvironmentCommand<WhisperServerConfigura
       VerificationCodeStore pendingAccounts = new VerificationCodeStore(dynamoDbClient,
           configuration.getDynamoDbTables().getPendingAccounts().getTableName());
 
-      Accounts accounts = new Accounts(dynamicConfigurationManager,
+      Accounts accounts = new Accounts(
           dynamoDbClient,
           dynamoDbAsyncClient,
           configuration.getDynamoDbTables().getAccounts().getTableName(),
@@ -186,9 +186,9 @@ public class DeleteUserCommand extends EnvironmentCommand<WhisperServerConfigura
           configuration.getDynamoDbTables().getReportMessage().getTableName(),
           configuration.getReportMessageConfiguration().getReportTtl());
       ReportMessageManager reportMessageManager = new ReportMessageManager(reportMessageDynamoDb, rateLimitersCluster,
-              configuration.getReportMessageConfiguration().getCounterTtl());
+          configuration.getReportMessageConfiguration().getCounterTtl());
       MessagesManager messagesManager = new MessagesManager(messagesDynamoDb, messagesCache,
-              reportMessageManager);
+          reportMessageManager, messageDeletionExecutor);
       DeletedAccountsManager deletedAccountsManager = new DeletedAccountsManager(deletedAccounts,
           deletedAccountsLockDynamoDbClient,
           configuration.getDynamoDbTables().getDeletedAccountsLock().getTableName());

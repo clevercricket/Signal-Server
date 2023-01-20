@@ -85,6 +85,7 @@ public class Account {
   @JsonIgnore
   private boolean canonicallyDiscoverable;
 
+
   public UUID getUuid() {
     // this is the one method that may be called on a stale account
     return uuid;
@@ -180,14 +181,6 @@ public class Account {
     return devices.stream().filter(device -> device.getId() == deviceId).findFirst();
   }
 
-  public boolean isGroupsV2Supported() {
-    requireNotStale();
-
-    return devices.stream()
-                  .filter(Device::isEnabled)
-                  .allMatch(Device::isGroupsV2Supported);
-  }
-
   public boolean isStorageSupported() {
     requireNotStale();
 
@@ -198,10 +191,6 @@ public class Account {
     requireNotStale();
 
     return getMasterDevice().map(Device::getCapabilities).map(Device.DeviceCapabilities::isTransfer).orElse(false);
-  }
-
-  public boolean isGv1MigrationSupported() {
-    return allEnabledDevicesHaveCapability(DeviceCapabilities::isGv1Migration);
   }
 
   public boolean isSenderKeySupported() {
@@ -230,6 +219,10 @@ public class Account {
 
   public boolean isGiftBadgesSupported() {
     return allEnabledDevicesHaveCapability(DeviceCapabilities::isGiftBadges);
+  }
+
+  public boolean isPaymentActivationSupported() {
+    return allEnabledDevicesHaveCapability(DeviceCapabilities::isPaymentActivation);
   }
 
   private boolean allEnabledDevicesHaveCapability(Predicate<DeviceCapabilities> predicate) {
@@ -304,16 +297,10 @@ public class Account {
 
   public long getLastSeen() {
     requireNotStale();
-
-    long lastSeen = 0;
-
-    for (Device device : devices) {
-      if (device.getLastSeen() > lastSeen) {
-        lastSeen = device.getLastSeen();
-      }
-    }
-
-    return lastSeen;
+    return devices.stream()
+        .map(Device::getLastSeen)
+        .max(Long::compare)
+        .orElse(0L);
   }
 
   public Optional<String> getCurrentProfileVersion() {
@@ -344,7 +331,6 @@ public class Account {
 
   public void addBadge(Clock clock, AccountBadge badge) {
     requireNotStale();
-
     boolean added = false;
     for (int i = 0; i < badges.size(); i++) {
       AccountBadge badgeInList = badges.get(i);
@@ -476,6 +462,31 @@ public class Account {
     requireNotStale();
 
     this.version = version;
+  }
+
+
+  /**
+   * Have all this account's devices been manually locked?
+   *
+   * @see Device#hasLockedCredentials
+   *
+   * @return true if all the account's devices were locked, false otherwise.
+   */
+  public boolean hasLockedCredentials() {
+    return devices.stream().allMatch(Device::hasLockedCredentials);
+  }
+
+  /**
+   * Lock account by invalidating authentication tokens.
+   *
+   * We only want to do this in cases where there is a potential conflict between the
+   * phone number holder and the registration lock holder. In that case, locking the
+   * account will ensure that either the registration lock holder proves ownership
+   * of the phone number, or after 7 days the phone number holder can register a new
+   * account.
+   */
+  public void lockAuthenticationCredentials() {
+    devices.forEach(Device::lockAuthenticationCredentials);
   }
 
   boolean isStale() {

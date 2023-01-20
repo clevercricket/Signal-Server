@@ -63,6 +63,7 @@ import org.whispersystems.textsecuregcm.storage.Device.DeviceCapabilities;
 import org.whispersystems.textsecuregcm.tests.util.AccountsHelper;
 import org.whispersystems.textsecuregcm.tests.util.RedisClusterHelper;
 import org.whispersystems.textsecuregcm.util.UsernameGenerator;
+import org.whispersystems.textsecuregcm.util.UsernameNormalizer;
 
 class AccountsManagerTest {
 
@@ -603,7 +604,7 @@ class AccountsManagerTest {
   @ValueSource(booleans = {true, false})
   void testCreateWithStorageCapability(final boolean hasStorage) throws InterruptedException {
     final AccountAttributes attributes = new AccountAttributes(false, 0, null, null, true,
-        new DeviceCapabilities(false, false, false, hasStorage, false, false, false, false, false, false, false, false));
+        new DeviceCapabilities(hasStorage, false, false, false, false, false, false, false, false));
 
     final Account account = accountsManager.create("+18005550123", "password", null, attributes, new ArrayList<>());
 
@@ -751,7 +752,7 @@ class AccountsManagerTest {
   @Test
   void testSetReservedUsername() throws UsernameNotAvailableException, UsernameReservationNotFoundException {
     final Account account = AccountsHelper.generateTestAccount("+18005551234", UUID.randomUUID(), UUID.randomUUID(), new ArrayList<>(), new byte[16]);
-    final String reserved = "scooby.1234";
+    final String reserved = "sCoObY.1234";
     setReservationHash(account, reserved);
     when(accounts.usernameAvailable(eq(Optional.of(RESERVATION_TOKEN)), eq(reserved))).thenReturn(true);
     accountsManager.confirmReservedUsername(account, reserved, RESERVATION_TOKEN);

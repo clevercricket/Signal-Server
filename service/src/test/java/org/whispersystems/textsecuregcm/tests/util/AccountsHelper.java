@@ -120,18 +120,18 @@ public class AccountsHelper {
           case "isEnabled" -> when(updatedAccount.isEnabled()).thenAnswer(stubbing);
           case "isDiscoverableByPhoneNumber" -> when(updatedAccount.isDiscoverableByPhoneNumber()).thenAnswer(stubbing);
           case "getNextDeviceId" -> when(updatedAccount.getNextDeviceId()).thenAnswer(stubbing);
-          case "isGroupsV2Supported" -> when(updatedAccount.isGroupsV2Supported()).thenAnswer(stubbing);
-          case "isGv1MigrationSupported" -> when(updatedAccount.isGv1MigrationSupported()).thenAnswer(stubbing);
           case "isSenderKeySupported" -> when(updatedAccount.isSenderKeySupported()).thenAnswer(stubbing);
           case "isAnnouncementGroupSupported" -> when(updatedAccount.isAnnouncementGroupSupported()).thenAnswer(stubbing);
           case "isChangeNumberSupported" -> when(updatedAccount.isChangeNumberSupported()).thenAnswer(stubbing);
           case "isPniSupported" -> when(updatedAccount.isPniSupported()).thenAnswer(stubbing);
           case "isStoriesSupported" -> when(updatedAccount.isStoriesSupported()).thenAnswer(stubbing);
           case "isGiftBadgesSupported" -> when(updatedAccount.isGiftBadgesSupported()).thenAnswer(stubbing);
+          case "isPaymentActivationSupported" -> when(updatedAccount.isPaymentActivationSupported()).thenAnswer(stubbing);
           case "getEnabledDeviceCount" -> when(updatedAccount.getEnabledDeviceCount()).thenAnswer(stubbing);
           case "getRegistrationLock" -> when(updatedAccount.getRegistrationLock()).thenAnswer(stubbing);
           case "getIdentityKey" -> when(updatedAccount.getIdentityKey()).thenAnswer(stubbing);
           case "getBadges" -> when(updatedAccount.getBadges()).thenAnswer(stubbing);
+          case "getLastSeen" -> when(updatedAccount.getLastSeen()).thenAnswer(stubbing);
           default -> throw new IllegalArgumentException("unsupported method: Account#" + stubbing.getInvocation().getMethod().getName());
         }
       }

@@ -28,6 +28,7 @@ import static org.whispersystems.textsecuregcm.tests.util.JsonHelpers.asJson;
 import static org.whispersystems.textsecuregcm.tests.util.JsonHelpers.jsonFixture;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.common.net.HttpHeaders;
 import com.google.protobuf.ByteString;
 import io.dropwizard.auth.PolymorphicAuthValueFactoryProvider;
 import io.dropwizard.testing.junit5.DropwizardExtensionsSupport;
@@ -54,6 +55,7 @@ import javax.ws.rs.client.Entity;
 import javax.ws.rs.client.Invocation;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import org.glassfish.jersey.server.ServerProperties;
 import org.glassfish.jersey.test.grizzly.GrizzlyWebTestContainerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -96,6 +98,7 @@ import org.whispersystems.textsecuregcm.tests.util.AuthHelper;
 import org.whispersystems.textsecuregcm.util.Pair;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
 import org.whispersystems.websocket.Stories;
+import reactor.core.publisher.Mono;
 
 @ExtendWith(DropwizardExtensionsSupport.class)
 class MessageControllerTest {
@@ -138,6 +141,7 @@ class MessageControllerTest {
   private static final ExecutorService multiRecipientMessageExecutor = mock(ExecutorService.class);
 
   private static final ResourceExtension resources = ResourceExtension.builder()
+      .addProperty(ServerProperties.UNWRAP_COMPLETION_STAGE_IN_WRITER_ENABLE, Boolean.TRUE)
       .addProvider(AuthHelper.getAuthFilter())
       .addProvider(new PolymorphicAuthValueFactoryProvider.Binder<>(
           ImmutableSet.of(AuthenticatedAccount.class, DisabledPermittedAuthenticatedAccount.class)))
@@ -461,7 +465,7 @@ class MessageControllerTest {
     );
 
     when(messagesManager.getMessagesForDevice(eq(AuthHelper.VALID_UUID), eq(1L), anyBoolean()))
-        .thenReturn(new Pair<>(envelopes, false));
+        .thenReturn(Mono.just(new Pair<>(envelopes, false)));
 
     final String userAgent = "Test-UA";
 
@@ -470,7 +474,7 @@ class MessageControllerTest {
             .request()
             .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
             .header(Stories.X_SIGNAL_RECEIVE_STORIES, receiveStories ? "true" : "false")
-            .header("USer-Agent", userAgent)
+            .header(HttpHeaders.USER_AGENT, userAgent)
             .accept(MediaType.APPLICATION_JSON_TYPE)
             .get(OutgoingMessageEntityList.class);
 
@@ -515,7 +519,7 @@ class MessageControllerTest {
     );
 
     when(messagesManager.getMessagesForDevice(eq(AuthHelper.VALID_UUID), eq(1L), anyBoolean()))
-        .thenReturn(new Pair<>(messages, false));
+        .thenReturn(Mono.just(new Pair<>(messages, false)));
 
     Response response =
         resources.getJerseyTest().target("/v1/messages/")
@@ -528,7 +532,7 @@ class MessageControllerTest {
   }
 
   @Test
-  void testDeleteMessages() throws Exception {
+  void testDeleteMessages() {
     long timestamp = System.currentTimeMillis();
 
     UUID sourceUuid = UUID.randomUUID();
@@ -718,7 +722,7 @@ class MessageControllerTest {
             .target(String.format("/v1/messages/%s", SINGLE_DEVICE_UUID))
             .request()
             .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
-            .header("User-Agent", "Test-UA")
+            .header(HttpHeaders.USER_AGENT, "Test-UA")
             .put(Entity.entity(SystemMapper.getMapper().readValue(jsonFixture(payloadFilename), IncomingMessageList.class),
                 MediaType.APPLICATION_JSON_TYPE));
 
@@ -826,7 +830,7 @@ class MessageControllerTest {
         .queryParam("story", isStory)
         .queryParam("urgent", urgent)
         .request()
-        .header("User-Agent", "FIXME");
+        .header(HttpHeaders.USER_AGENT, "FIXME");
 
     // add access header if needed
     if (authorize) {
@@ -959,7 +963,7 @@ class MessageControllerTest {
         .queryParam("ts", 1663798405641L)
         .queryParam("story", story)
         .request()
-        .header("User-Agent", "Test User Agent")
+        .header(HttpHeaders.USER_AGENT, "Test User Agent")
         .header(OptionalAccess.UNIDENTIFIED, accessBytes);
 
     // make the PUT request

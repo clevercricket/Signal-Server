@@ -149,6 +149,33 @@ public class Device {
     this.salt      = credentials.getSalt();
   }
 
+  /**
+   * Has this device been manually locked?
+   *
+   * We lock a device by prepending "!" to its token.
+   * This character cannot normally appear in valid tokens.
+   *
+   * @return true if the credential was locked, false otherwise.
+   */
+  public boolean hasLockedCredentials() {
+    AuthenticationCredentials auth = getAuthenticationCredentials();
+    return auth.getHashedAuthenticationToken().startsWith("!");
+  }
+
+  /**
+   * Lock device by invalidating authentication tokens.
+   *
+   * This should only be used from Account::lockAuthenticationCredentials.
+   *
+   * See that method for more information.
+   */
+  public void lockAuthenticationCredentials() {
+    AuthenticationCredentials oldAuth = getAuthenticationCredentials();
+    String token = "!" + oldAuth.getHashedAuthenticationToken();
+    String salt = oldAuth.getSalt();
+    setAuthenticationCredentials(new AuthenticationCredentials(token, salt));
+  }
+
   public AuthenticationCredentials getAuthenticationCredentials() {
     return new AuthenticationCredentials(authToken, salt);
   }
@@ -225,38 +252,12 @@ public class Device {
     return this.userAgent;
   }
 
-  public boolean isGroupsV2Supported() {
-    final boolean groupsV2Supported;
-
-    if (this.capabilities != null) {
-      final boolean ios = this.apnId != null || this.voipApnId != null;
-
-      groupsV2Supported = this.capabilities.isGv2_3() || (ios && this.capabilities.isGv2_2());
-    } else {
-      groupsV2Supported = false;
-    }
-
-    return groupsV2Supported;
-  }
-
   public static class DeviceCapabilities {
-    @JsonProperty
-    private boolean gv2;
-
-    @JsonProperty("gv2-2")
-    private boolean gv2_2;
-
-    @JsonProperty("gv2-3")
-    private boolean gv2_3;
-
     @JsonProperty
     private boolean storage;
 
     @JsonProperty
     private boolean transfer;
-
-    @JsonProperty("gv1-migration")
-    private boolean gv1Migration;
 
     @JsonProperty
     private boolean senderKey;
@@ -276,36 +277,24 @@ public class Device {
     @JsonProperty
     private boolean giftBadges;
 
+    @JsonProperty
+    private boolean paymentActivation;
+
     public DeviceCapabilities() {
     }
 
-    public DeviceCapabilities(boolean gv2, final boolean gv2_2, final boolean gv2_3, boolean storage, boolean transfer,
-        boolean gv1Migration, final boolean senderKey, final boolean announcementGroup, final boolean changeNumber,
-        final boolean pni, final boolean stories, final boolean giftBadges) {
-      this.gv2 = gv2;
-      this.gv2_2 = gv2_2;
-      this.gv2_3 = gv2_3;
+    public DeviceCapabilities(boolean storage, boolean transfer,
+        final boolean senderKey, final boolean announcementGroup, final boolean changeNumber,
+        final boolean pni, final boolean stories, final boolean giftBadges, final boolean paymentActivation) {
       this.storage = storage;
       this.transfer = transfer;
-      this.gv1Migration = gv1Migration;
       this.senderKey = senderKey;
       this.announcementGroup = announcementGroup;
       this.changeNumber = changeNumber;
       this.pni = pni;
       this.stories = stories;
       this.giftBadges = giftBadges;
-    }
-
-    public boolean isGv2() {
-      return gv2;
-    }
-
-    public boolean isGv2_2() {
-      return gv2_2;
-    }
-
-    public boolean isGv2_3() {
-      return gv2_3;
+      this.paymentActivation = paymentActivation;
     }
 
     public boolean isStorage() {
@@ -314,10 +303,6 @@ public class Device {
 
     public boolean isTransfer() {
       return transfer;
-    }
-
-    public boolean isGv1Migration() {
-      return gv1Migration;
     }
 
     public boolean isSenderKey() {
@@ -342,6 +327,10 @@ public class Device {
 
     public boolean isGiftBadges() {
       return giftBadges;
+    }
+
+    public boolean isPaymentActivation() {
+      return paymentActivation;
     }
   }
 }

@@ -44,6 +44,7 @@ import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.entities.MessageProtos;
+import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
 import org.whispersystems.textsecuregcm.redis.ClusterLuaScript;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantPubSubConnection;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisCluster;
@@ -51,6 +52,7 @@ import org.whispersystems.textsecuregcm.util.Pair;
 import org.whispersystems.textsecuregcm.util.RedisClusterUtil;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
 public class MessagesCache extends RedisClusterPubSubAdapter<String, String> implements Managed {
@@ -61,6 +63,8 @@ public class MessagesCache extends RedisClusterPubSubAdapter<String, String> imp
 
   private final ExecutorService notificationExecutorService;
   private final ExecutorService messageDeletionExecutorService;
+  // messageDeletionExecutorService wrapped into a reactor Scheduler
+  private final Scheduler messageDeletionScheduler;
 
   private final ClusterLuaScript insertScript;
   private final ClusterLuaScript removeByGuidScript;
@@ -92,6 +96,7 @@ public class MessagesCache extends RedisClusterPubSubAdapter<String, String> imp
   @VisibleForTesting
   static final Duration MAX_EPHEMERAL_MESSAGE_DELAY = Duration.ofSeconds(10);
 
+  private static final String GET_FLUX_NAME = MetricsUtil.name(MessagesCache.class, "get");
   private static final int PAGE_SIZE = 100;
 
   private static final Logger logger = LoggerFactory.getLogger(MessagesCache.class);
@@ -106,6 +111,7 @@ public class MessagesCache extends RedisClusterPubSubAdapter<String, String> imp
 
     this.notificationExecutorService = notificationExecutorService;
     this.messageDeletionExecutorService = messageDeletionExecutorService;
+    this.messageDeletionScheduler = Schedulers.fromExecutorService(messageDeletionExecutorService, "messageDeletion");
 
     this.insertScript = ClusterLuaScript.fromResource(insertCluster, "lua/insert_item.lua", ScriptOutputType.INTEGER);
     this.removeByGuidScript = ClusterLuaScript.fromResource(readDeleteCluster, "lua/remove_item_by_guid.lua",
@@ -220,7 +226,8 @@ public class MessagesCache extends RedisClusterPubSubAdapter<String, String> imp
 
     discardStaleEphemeralMessages(destinationUuid, destinationDevice, staleEphemeralMessages);
 
-    return messagesToPublish;
+    return messagesToPublish.name(GET_FLUX_NAME)
+        .metrics();
   }
 
   private static boolean isStaleEphemeralMessage(final MessageProtos.Envelope message,
@@ -233,7 +240,7 @@ public class MessagesCache extends RedisClusterPubSubAdapter<String, String> imp
     staleEphemeralMessages
         .map(e -> UUID.fromString(e.getServerGuid()))
         .buffer(PAGE_SIZE)
-        .subscribeOn(Schedulers.boundedElastic())
+        .subscribeOn(messageDeletionScheduler)
         .subscribe(staleEphemeralMessageGuids ->
                 remove(destinationUuid, destinationDevice, staleEphemeralMessageGuids)
                     .thenAccept(removedMessages -> staleEphemeralMessagesCounter.increment(removedMessages.size())),
@@ -384,12 +391,13 @@ public class MessagesCache extends RedisClusterPubSubAdapter<String, String> imp
   }
 
   public void removeMessageAvailabilityListener(final MessageAvailabilityListener listener) {
-    @Nullable final String queueName = queueNamesByMessageListener.remove(listener);
+    @Nullable final String queueName = queueNamesByMessageListener.get(listener);
 
     if (queueName != null) {
       unsubscribeFromKeyspaceNotifications(queueName);
 
       synchronized (messageListenersByQueueName) {
+        queueNamesByMessageListener.remove(listener);
         messageListenersByQueueName.remove(queueName);
       }
     }

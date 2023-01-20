@@ -8,9 +8,11 @@ package org.whispersystems.textsecuregcm.controllers;
 import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
 
 import com.codahale.metrics.annotation.Timed;
+import com.google.common.net.HttpHeaders;
 import io.dropwizard.auth.Auth;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Tags;
+import java.io.IOException;
 import java.util.NoSuchElementException;
 import javax.validation.Valid;
 import javax.ws.rs.Consumes;
@@ -19,7 +21,6 @@ import javax.ws.rs.POST;
 import javax.ws.rs.PUT;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
-import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedAccount;
@@ -29,7 +30,7 @@ import org.whispersystems.textsecuregcm.entities.AnswerRecaptchaChallengeRequest
 import org.whispersystems.textsecuregcm.limits.RateLimitChallengeManager;
 import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.push.NotPushRegisteredException;
-import org.whispersystems.textsecuregcm.util.ForwardedIpUtil;
+import org.whispersystems.textsecuregcm.util.HeaderUtils;
 
 @Path("/v1/challenge")
 public class ChallengeController {
@@ -49,8 +50,8 @@ public class ChallengeController {
   @Consumes(MediaType.APPLICATION_JSON)
   public Response handleChallengeResponse(@Auth final AuthenticatedAccount auth,
       @Valid final AnswerChallengeRequest answerRequest,
-      @HeaderParam("X-Forwarded-For") final String forwardedFor,
-      @HeaderParam(HttpHeaders.USER_AGENT) final String userAgent) throws RateLimitExceededException {
+      @HeaderParam(HttpHeaders.X_FORWARDED_FOR) final String forwardedFor,
+      @HeaderParam(HttpHeaders.USER_AGENT) final String userAgent) throws RateLimitExceededException, IOException {
 
     Tags tags = Tags.of(UserAgentTagUtil.getPlatformTag(userAgent));
 
@@ -64,7 +65,7 @@ public class ChallengeController {
 
         try {
           final AnswerRecaptchaChallengeRequest recaptchaChallengeRequest = (AnswerRecaptchaChallengeRequest) answerRequest;
-          final String mostRecentProxy = ForwardedIpUtil.getMostRecentProxy(forwardedFor).orElseThrow();
+          final String mostRecentProxy = HeaderUtils.getMostRecentProxy(forwardedFor).orElseThrow();
 
           rateLimitChallengeManager.answerRecaptchaChallenge(auth.getAccount(), recaptchaChallengeRequest.getCaptcha(),
               mostRecentProxy, userAgent);

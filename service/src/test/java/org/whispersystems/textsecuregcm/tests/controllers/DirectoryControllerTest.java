@@ -11,6 +11,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.common.net.HttpHeaders;
 import io.dropwizard.auth.PolymorphicAuthValueFactoryProvider;
 import io.dropwizard.testing.junit5.DropwizardExtensionsSupport;
 import io.dropwizard.testing.junit5.ResourceExtension;
@@ -68,8 +69,8 @@ class DirectoryControllerTest {
                      .request()
                      .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
                      .get(ExternalServiceCredentials.class);
-    assertThat(token.getUsername()).isEqualTo(validCredentials.getUsername());
-    assertThat(token.getPassword()).isEqualTo(validCredentials.getPassword());
+    assertThat(token.username()).isEqualTo(validCredentials.username());
+    assertThat(token.password()).isEqualTo(validCredentials.password());
   }
 
   @Test
@@ -93,7 +94,7 @@ class DirectoryControllerTest {
                  .header("Authorization",
                          AuthHelper.getAuthHeader(AuthHelper.VALID_UUID,
                                                   AuthHelper.VALID_PASSWORD))
-                 .header("X-Forwarded-For", "192.168.1.1, 1.1.1.1")
+                 .header(HttpHeaders.X_FORWARDED_FOR, "192.168.1.1, 1.1.1.1")
                  .put(Entity.entity(Collections.emptyMap(), MediaType.APPLICATION_JSON_TYPE));
 
 
